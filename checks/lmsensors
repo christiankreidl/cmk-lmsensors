@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+# -*- encoding: utf-8; py-indent-offset: 4 -*-
+
+# License: GNU General Public License v2
+# (c) 2014 Wouter de Geus <benv-check_mk@junerules.com>
+# (c) 2021 Christian Kreidl
+
+
+# Example for output from agent
+# ---------------------------------------------------------
+# lm85-i2c-0-2e
+# in0         +1.56 V  min   +0.00 V max   +3.32 V
+# Vcore       +1.34 V  min   +0.00 V max   +2.99 V
+# +3.3V       +3.33 V  min   +0.00 V max   +4.38 V
+# +5V         +5.10 V  min   +0.00 V max   +6.64 V
+# +12V       +11.94 V  min   +0.00 V max  +15.94 V
+# fan1       1472 RPM  min     0 RPM
+# fan2          0 RPM  min     0 RPM
+# fan3        968 RPM  min     0 RPM
+# fan4       1272 RPM  min     0 RPM
+# temp1       +64.0 C  low   128.0 C high  +127.0 C
+# MB Temp    +50.0 C  low   127.0 C high  +127.0 C
+# temp3       +42.0 C  low   127.0 C high  +127.0 C
+# cpu0vid   +1.088 V
+# ---------------------------------------------------------
+
+#from pprint import pprint
+# show all local variables:       pprint( locals())
+
+from cmk.base.check_api import check_levels
+from cmk.base.check_legacy_includes.temperature import check_temperature
+
+factory_settings["lmsensors_fan_default_levels"] = {
+    "upper": (2000, 3000),
+    "lower": (100, 100),
+}
+
+factory_settings["lmsensors_temperature_default_levels"] = {
+    "levels": (80, 80),
+    "levels_lower": (10, 10),
+}
+
+def parse_lmsensors(info):
+   # [['lm85i2c02e'], ['in0', '+1.56', 'V', 'min', '+0.00', 'V', 'max', '+3.32', 'V'], ['Vcore', '+1.35', 'V', 'min', '+0.00', 'V', 'max', '+2.99', 'V'], ['+3.3V', '+3.33', 'V', 'min', '+0.00', 'V', 'max', '+4.38', 'V'], ['+5V', '+5.10', 'V', 'min', '+0.00', 'V', 'max', '+6.64', 'V'], ['+12V', '+12.00', 'V', 'min', '+0.00', 'V', 'max', '+15.94', 'V'], ['fan1', '1376', 'RPM', 'min', '0', 'RPM'], ['fan2', '0', 'RPM', 'min', '0', 'RPM'], ['fan3', '970', 'RPM', 'min', '0', 'RPM'], ['fan4', '1276', 'RPM', 'min', '0', 'RPM'], ['temp1', '+59.0', 'C', 'low', '128.0', 'C', 'high', '+127.0', 'C'], ['MB', 'Temp', '+50.0', 'C', 'low', '127.0', 'C', 'high', '+127.0', 'C'], ['temp3', '+43.0', 'C', 'low', '127.0', 'C', 'high', '+127.0', 'C'], ['cpu0vid', '+1.088', 'V']]
+    result = {}
+
+    for line in info:
+        if len(line) < 3:
+            continue # We don't use the chipname (yet) 'lm85i2c02e'
+
+        sname = line[0] # 'in0', 'fan1', etc
+        stype = line[2] # 'V', 'RPM', 'C'
+
+        try:
+            value = float(line[1])
+        except ValueError:
+            return
+
+        sensor = { 'value' : value }
+
+        # See if sensor has a supplied min/max value
+        for word in line:
+            if word == 'min' or word == 'low':
+                level = float(line[line.index(word)+1]) # level is next word in line
+                sensor['lower'] = (level,level)  # (warn,crit)
+
+            if word == 'max' or word == 'high':
+                level = float(line[line.index(word)+1]) # level is next word in line
+                sensor['upper'] = (level,level)  # (warn,crit)
+
+            if word == 'crit':
+                level = float(line[line.index(word)+1]) # level is next word in line
+                if "upper" in sensor:
+                    sensor['upper'] = (sensor['upper'][0],level)  # overwrite critical level
+                else:
+                    sensor['upper'] = (level,level)  # set critical level
+
+        if stype == 'V':
+            result.setdefault("volt", {})[sname] = sensor
+        elif stype == 'C':
+            result.setdefault("temp", {})[sname] = sensor
+        elif stype == 'RPM':
+            result.setdefault("fan",  {})[sname] = sensor
+    return result
+
+
+def inventory_lmsensors(sensor_type, parsed):
+    if parsed.get(sensor_type):
+       sensors = {}
+
+       for key in parsed.get(sensor_type).keys():
+            factorylevels = {}
+            #if sensor_type == 'volt':
+            if sensor_type == 'temp':
+               if (not "upper" in parsed[sensor_type][key]):
+                  factorylevels['levels'] = factory_settings["lmsensors_temperature_default_levels"]['levels']
+               if (not "lower" in parsed[sensor_type][key]):
+                  factorylevels['levels_lower'] = factory_settings["lmsensors_temperature_default_levels"]['levels_lower']
+
+            if sensor_type == 'fan':
+               if (not "upper" in parsed[sensor_type][key]):
+                  factorylevels['upper'] = factory_settings["lmsensors_fan_default_levels"]['upper']
+               if (not "lower" in parsed[sensor_type][key]):
+                  factorylevels['lower'] = factory_settings["lmsensors_fan_default_levels"]['lower']
+
+            sensors[key] = factorylevels;
+
+       for key in parsed.get(sensor_type).keys():
+          yield key, factorylevels
+    else:
+       return
+
+
+def check_lmsensors_fan(item, params, parsed):
+    if item in parsed.get('fan'):
+        # use levels found in lm-sensors output if not defined by user
+        if (not "upper" in params) and ("upper" in parsed['fan'][item]) :
+            params['upper'] = parsed['fan'][item]['upper']
+        if (not "lower" in params):
+           params['lower'] = (None,None)
+        if ("lower" in parsed['fan'][item]) :
+            params['lower'] = parsed['fan'][item]['lower']
+
+        params["output_metrics"] = True
+
+        levels = params.get("upper", (None, None)) + params["lower"]
+        return check_levels(parsed['fan'][item]['value'],
+                          "fan",
+                          levels,
+                          unit="RPM",
+                          human_readable_func=int,
+                          infoname="Speed"
+                          )
+    else:
+        return
+
+
+def check_lmsensors_temperature(item, params, parsed):
+    if item in parsed.get('temp'):
+        upper = None
+        lower = None
+        if ("upper" in parsed['temp'][item]) :
+            upper = parsed['temp'][item]['upper']
+        if ("lower" in parsed['temp'][item]) :
+            lower = parsed['temp'][item]['lower']
+
+        return check_temperature(
+            parsed['temp'][item]['value'],
+            params,
+            unique_name="lmsensors_temp_%s" % item,
+            dev_levels=upper,
+            dev_levels_lower=lower,
+            )
+    else:
+        return
+
+
+def check_lmsensors_voltage(item, params, parsed):
+    if item in parsed.get('volt'):
+
+       if (not "upper" in params) and ("upper" in parsed['volt'][item]) :
+            params['upper'] = parsed['volt'][item]['upper']
+       if (not "lower" in params) and ("lower" in parsed['volt'][item]) :
+            params['lower'] = parsed['volt'][item]['lower']
+
+       levels = params.get("upper", (None, None)) + params.get("lower", (None, None))
+       return check_levels(parsed['volt'][item]['value'],
+                          "volt",
+                          levels,
+                          unit="Volt",
+                          human_readable_func=lambda r: ("%.2f") % r,
+                          )
+
+    else:
+        return
+
+# declare the check to Check_MK
+check_info["lmsensors"] = {
+    'parse_function'          : parse_lmsensors,
+}
+
+check_info['lmsensors.fan'] = {
+    'check_function'          : check_lmsensors_fan,
+    'inventory_function'      : lambda parsed: inventory_lmsensors('fan', parsed),
+    'service_description'     : "Sensor %s",
+    'group'                   : "fan",
+    'has_perfdata'            : True,
+    # use default levels from lmsensors; 'default_levels_variable': 'lmsensors_fan_default_levels',
+}
+check_info['lmsensors.temp'] = {
+    'check_function'          : check_lmsensors_temperature,
+    'inventory_function'      : lambda parsed: inventory_lmsensors('temp', parsed),
+    'service_description'     : "Sensor %s",
+    'group'                   : "temperature",
+    'has_perfdata'            : True,
+    # use default levels from lmsensors; 'default_levels_variable': 'lmsensors_temperature_default_levels',
+}
+check_info['lmsensors.volt'] = {
+    'check_function'          : check_lmsensors_voltage,
+    'inventory_function'      : lambda parsed: inventory_lmsensors('volt', parsed),
+    'service_description'     : "Sensor %s",
+    'group'                   : "volt",
+    'has_perfdata'            : True,
+}
+
+
