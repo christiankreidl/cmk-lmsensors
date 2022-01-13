@@ -86,27 +86,8 @@ def parse_lmsensors(info):
 
 def inventory_lmsensors(sensor_type, parsed):
     if parsed.get(sensor_type):
-       sensors = {}
-
        for key in parsed.get(sensor_type).keys():
-            factorylevels = {}
-            #if sensor_type == 'volt':
-            if sensor_type == 'temp':
-               if (not "upper" in parsed[sensor_type][key]):
-                  factorylevels['levels'] = factory_settings["lmsensors_temperature_default_levels"]['levels']
-               if (not "lower" in parsed[sensor_type][key]):
-                  factorylevels['levels_lower'] = factory_settings["lmsensors_temperature_default_levels"]['levels_lower']
-
-            if sensor_type == 'fan':
-               if (not "upper" in parsed[sensor_type][key]):
-                  factorylevels['upper'] = factory_settings["lmsensors_fan_default_levels"]['upper']
-               if (not "lower" in parsed[sensor_type][key]):
-                  factorylevels['lower'] = factory_settings["lmsensors_fan_default_levels"]['lower']
-
-            sensors[key] = factorylevels;
-
-       for key in parsed.get(sensor_type).keys():
-          yield key, factorylevels
+          yield key, {}
     else:
        return
 
@@ -177,15 +158,16 @@ def check_lmsensors_voltage(item, params, parsed):
 # declare the check to Check_MK
 check_info["lmsensors"] = {
     'parse_function'          : parse_lmsensors,
+# required for cmk <2.0    'includes': ['temperature.include']
 }
 
 check_info['lmsensors.fan'] = {
     'check_function'          : check_lmsensors_fan,
     'inventory_function'      : lambda parsed: inventory_lmsensors('fan', parsed),
     'service_description'     : "Sensor %s",
-    'group'                   : "fan",
+    'group'                   : "hw_fans",
     'has_perfdata'            : True,
-    # use default levels from lmsensors; 'default_levels_variable': 'lmsensors_fan_default_levels',
+    'default_levels_variable': 'lmsensors_fan_default_levels',
 }
 check_info['lmsensors.temp'] = {
     'check_function'          : check_lmsensors_temperature,
@@ -193,7 +175,7 @@ check_info['lmsensors.temp'] = {
     'service_description'     : "Sensor %s",
     'group'                   : "temperature",
     'has_perfdata'            : True,
-    # use default levels from lmsensors; 'default_levels_variable': 'lmsensors_temperature_default_levels',
+    'default_levels_variable': 'lmsensors_temperature_default_levels',
 }
 check_info['lmsensors.volt'] = {
     'check_function'          : check_lmsensors_voltage,
